@@ -1,9 +1,3 @@
-/*
- * mbs.c
- *
- *  Created on: Nov 7, 2013
- *      Author: hyang
- */
 /*************************************************************************
 **Copyright (c) 2013 Trojan Technologies Inc. 
 **All rights reserved.
@@ -21,113 +15,39 @@
 ** Modified date:		
 ** Descriptions:		
 **************************************************************************/
-#define MBS_C
+#define __MBS_C
 
 #include "common.h"
 #include "mbs.h"
 
 
-/*!
- * Constants which defines the format of a modbus frame. The example is
- * shown for a Modbus RTU/ASCII frame. Note that the Modbus PDU is not
- * dependent on the underlying transport.
- *
- * <code>
- * <------------------------ MODBUS SERIAL LINE PDU (1) ------------------->
- *              <----------- MODBUS PDU (1') ---------------->
- *  +-----------+---------------+----------------------------+-------------+
- *  | Address   | Function Code | Data                       | CRC/LRC     |
- *  +-----------+---------------+----------------------------+-------------+
- *  |           |               |                                   |
- * (2)        (3/2')           (3')                                (4)
- *
- * (1)  ... MB_SER_PDU_SIZE_MAX = 256
- * (2)  ... MB_SER_PDU_ADDR_OFF = 0
- * (3)  ... MB_SER_PDU_PDU_OFF  = 1
- * (4)  ... MB_SER_PDU_SIZE_CRC = 2
- *
- * (1') ... MB_PDU_SIZE_MAX     = 253
- * (2') ... MB_PDU_FUNC_OFF     = 0
- * (3') ... MB_PDU_DATA_OFF     = 1
- * </code>
- */
+#define LIB_VER			0x00000200 //library version, only low word be useful, BCD format, V**.**
+#define LIB_CMPL_TIME	0x20160519 //library compiled time, BCD format, yyyy.mm.dd
 
-/* ----------------------- Defines ------------------------------------------*/
-#define MB_SER_PDU_SIZE_MIN     4       /*!< Minimum size of a Modbus RTU frame. */
-#define MB_SER_PDU_SIZE_MAX     256     /*!< Maximum size of a Modbus RTU frame. */
-#define MB_SER_PDU_SIZE_CRC     2       /*!< Size of CRC field in PDU. */
-#define MB_SER_PDU_ADDR_OFF     0       /*!< Offset of slave address in Ser-PDU. */
-#define MB_SER_PDU_PDU_OFF      1       /*!< Offset of Modbus-PDU in Ser-PDU. */
-
-#define MB_PDU_SIZE_MAX     253 /*!< Maximum size of a PDU. */
-#define MB_PDU_SIZE_MIN     1   /*!< Function Code */
-#define MB_PDU_FUNC_OFF     0   /*!< Offset of function code in PDU. */
-#define MB_PDU_DATA_OFF     1   /*!< Offset for response data in PDU. */
-
-//modbus device address related defines
-#define MB_ID_BROAD	       ( 0 )   /*! Modbus broadcasting address. */
-#define MB_ID_MIN          ( 1 )   /*! Smallest possible slave address. */
-#define MB_ID_MAX          ( 247 ) /*! Biggest possible slave address. */
-#define MB_ID_UNIVE	       ( 255 ) /*! Universal device address  */
+/*************************extern variable declaration*************************/
 
 
-//Modbus exception codes define
-#define MBE_UNKNOW_ERR			0
-#define MBE_ILLEGAL_FUNCTION	1
-#define MBE_ILLEGAL_DATA_ADDR	2
-#define MBE_ILLEGAL_DATA_VALUE	3
-#define MBE_SLAVE_DEVICE_FAIL	4
-#define MBE_ACKNOWLEDGE			5
-#define MBE_SLAVE_DEVICE_BUSY	6
-
-//max data quantity about Modbus access at one time
-#define MAX_READ_COIL			2000
-#define MAX_READ_REG			125
-#define MAX_FORCE_MULTI_COIL	1968
-#define MAX_PRESET_MULTI_REG	123
+/*************************extern function declaration*************************/
+extern  uint32 	GetInterval(uint32 prevTime); //unit: ms
 
 
-//Modbus standard function code define
-#define	READ_COIL			0x01
-#define READ_INPUT_DIS		0x02
-#define READ_HOLD_REG		0x03
-#define READ_INPUT_REG		0x04
-#define FORCE_SINGLE_COIL	0x05
-#define PRESET_SINGLE_REG	0x06
-#define FORCE_MULTI_COIL	0x0E
-#define PRESET_MULTI_REG	0x10
-//user defined function code. (valid range: 0x41~0x48, 0x64~0x6E)
-#define GET_INNER_VER		0x41
-#define GET_DEV_INFO		0x42
-#define GET_STAT_INFO		0x43
-#define SYS_DIAGN			0x44
-#define GET_ERR				0x45
-#define CLR_ERR				0x46
+/****************************variable declaration*****************************/
 
 
-/********************extern variable declaration**************************/
-
-
-/********************extern function declaration**************************/
-extern  uint32 	GetInterval(uint32 prevTime); //unit: 1ms
-
-
-/*********************variable declaration********************************/
-
-
-/********************function declaration*********************************/
+/****************************function declaration*****************************/
 static void 	MbsRcvSrv(MB_RTU_SLV *pMbs);
 static void 	MbsSndSrv(MB_RTU_SLV *pMbs);
 static void 	MbsRsp(MB_RTU_SLV *pMbs);
 static void 	MbsCorrectRsp(MB_RTU_SLV *pMbs);
 static void 	MbsErrRsp(MB_RTU_SLV *pMbs);
 static void 	ReadHoldReg(MB_RTU_SLV *pMbs);
-static void 	PresetSingleReg(MB_RTU_SLV *pMbs);
-static void 	PresetMultiReg(MB_RTU_SLV *pMbs);
+static void 	WriteSingleReg(MB_RTU_SLV *pMbs);
+static void 	WriteMultiReg(MB_RTU_SLV *pMbs);
 static void 	GetInnerVer(MB_RTU_SLV *pMbs);
+static void 	GetLibVer(MB_RTU_SLV *pMbs);
 
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsInit
 Arguments 	  : [out]pMbs: pointer to the modbus control structure to be initialized
 				[in]baud: baud rate(2400-115200 bps)
@@ -149,7 +69,7 @@ Arguments 	  : [out]pMbs: pointer to the modbus control structure to be initiali
 Return		  : TRUE-success
 				FALSE-failed (invalid arguments)
 Description	  : Modbus-RTU slave initialization.
-**************************************************************************/
+******************************************************************************/
 uint8 MbsInit(MB_RTU_SLV *pMbs, uint32 baud, uint8 parity, uint8 devAddr, 
 			  uint16 *pReg, uint16 regSize, uint16 regBase, uint16 rwBase, 
 			  uint16 rwSize, uint8 *sndBuf, uint8 sbufSize,
@@ -160,9 +80,9 @@ uint8 MbsInit(MB_RTU_SLV *pMbs, uint32 baud, uint8 parity, uint8 devAddr,
 			  BOOL8 	(*funcIsSndIdle) (void),
 			  BOOL8 	(*funcSndFrm) (uint8*, uint16))
 {
-	/*ASSERT((pMbs != NULL) && (pReg != NULL) && (regSize) && (sndBuf != NULL) && (sbufSize) 
+	ASSERT((pMbs != NULL) && (pReg != NULL) && (regSize) && (sndBuf != NULL) && (sbufSize) 
 		&& (funcPortInit != NULL) && (funcGetRcvCnt != NULL) && (funcGetLastRcvTime != NULL) 
-		&& (funcRcvFrm != NULL) && (funcIsSndIdle != NULL) && (funcSndFrm != NULL));*/
+		&& (funcRcvFrm != NULL) && (funcIsSndIdle != NULL) && (funcSndFrm != NULL));
 
 	/*	initialize modubs register areas */
 	if ( (rwBase < regBase) || ((rwBase + rwSize) > (regBase + regSize)) )
@@ -183,26 +103,34 @@ uint8 MbsInit(MB_RTU_SLV *pMbs, uint32 baud, uint8 parity, uint8 devAddr,
 	if (sbufSize < MIN_SBUF_SIZE)
 	{
 		return FALSE; //size of send buffer is not enough
-	}		
-	pMbs->rtuSpace = (3500 * 11) / baud + 2; //unit: ms, 3500=3.5*1000(1ms/1s)
+	}
+	if (baud > 19200)
+	{
+		pMbs->rtuSpace = 3; //unit: ms, 1750(us) / 1000(us/ms) + 2 = 3
+	}
+	else
+	{
+		pMbs->rtuSpace = (3500 * 11) / baud + 2; //unit: ms, 3500=3.5*1000(ms/s)
+	}
 	pMbs->devID = devAddr;
-	pMbs->rcvLen = 0;
+	pMbs->rcvSize = 0;
 	pMbs->sbuf = sndBuf;
 	pMbs->sbufSize = sbufSize;
-	pMbs->sndLen = 0;
+	pMbs->sndSize = 0;
 	pMbs->errCode = MBE_UNKNOW_ERR;
 	pMbs->rspType = NO_RSP;
 	
 	/*	initialize port supporting operation interface */
-	pMbs->pfPortInit = funcPortInit;
-	pMbs->pfGetRcvCnt = funcGetRcvCnt;
-	pMbs->pfGetLastRcvTime = funcGetLastRcvTime;
-	pMbs->pfRcvFrm = funcRcvFrm;
-	pMbs->pfIsSndIdle = funcIsSndIdle;
-	pMbs->pfSndFrm = funcSndFrm;
+	pMbs->PortInit = funcPortInit;
+	pMbs->GetRcvCnt = funcGetRcvCnt;
+	pMbs->GetLastRcvTime = funcGetLastRcvTime;
+	pMbs->RcvFrm = funcRcvFrm;
+	pMbs->IsSndIdle = funcIsSndIdle;
+	pMbs->SndFrm = funcSndFrm;
+	pMbs->pFuncHandler = NULL;
 	
 	/*	initialize real port */
-	if (!(pMbs->pfPortInit(baud, parity, pMbs->rtuSpace)))
+	if (!(pMbs->PortInit(baud, parity, pMbs->rtuSpace)))
 	{
 		return FALSE; //port initialization failed.
 	}
@@ -211,37 +139,40 @@ uint8 MbsInit(MB_RTU_SLV *pMbs, uint32 baud, uint8 parity, uint8 devAddr,
 }
 
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsRsp
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null
 Description	  : modbus slave response process.
-**************************************************************************/
+******************************************************************************/
 void MbsRsp(MB_RTU_SLV *pMbs)
 {
 	pMbs->rspType = NO_RSP;
 	
 	switch (pMbs->rbuf[1])
 	{
-		case  READ_HOLD_REG:
+		case  MBC_READ_HOLD_REG:
 			ReadHoldReg(pMbs);
 			break;
-		case  PRESET_SINGLE_REG:
-			PresetSingleReg(pMbs);
+		case  MBC_WRITE_SINGLE_REG:
+			WriteSingleReg(pMbs);
 			break;
-		case  PRESET_MULTI_REG:
-			PresetMultiReg(pMbs);
+		case  MBC_WRITE_MULTI_REG:
+			WriteMultiReg(pMbs);
 			break;
-		case  GET_INNER_VER:
+		case  MBC_GET_INNER_VER:
 			GetInnerVer(pMbs);
 			break;
-		case  GET_DEV_INFO:
+		case  MBC_GET_LIB_VER:
+			GetLibVer(pMbs);
 			break;
-		case  GET_STAT_INFO:
+		case  MBC_GET_DEV_INFO:
 			break;
-		case  GET_ERR:
+		case  MBC_GET_STAT_INFO:
 			break;
-		case  CLR_ERR:
+		case  MBC_GET_ERR:
+			break;
+		case  MBC_CLR_ERR:
 			break;
 		default:
 			pMbs->errCode = MBE_ILLEGAL_FUNCTION; //unsupported function code
@@ -253,7 +184,7 @@ void MbsRsp(MB_RTU_SLV *pMbs)
 	if (pMbs->rbuf[0] == MB_ID_BROAD)
 	{
 		pMbs->rspType = NO_RSP;
-		pMbs->sndLen = 0;
+		pMbs->sndSize = 0;
 		return;
 	}
 
@@ -266,53 +197,53 @@ void MbsRsp(MB_RTU_SLV *pMbs)
 			MbsErrRsp(pMbs);
 			break;
 		case  NO_RSP:
-			pMbs->sndLen = 0;
+			pMbs->sndSize = 0;
 			break;
 		default:
 			break;
 	}
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsCorrectRsp
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null 
 Description	  : Modbus slave correct response.
-**************************************************************************/
+******************************************************************************/
 void MbsCorrectRsp(MB_RTU_SLV *pMbs)
 {
 	uint16	crcValue = 0;
 	uint8	*pch = pMbs->sbuf;
 
-	crcValue = CRC16(pch, pMbs->sndLen);
+	crcValue = CRC16(pch, pMbs->sndSize);
 
-	pch += pMbs->sndLen;
+	pch += pMbs->sndSize;
 	*pch++ = crcValue >> 8;
 	*pch = crcValue & 0xff;
-	pMbs->sndLen += 2;
+	pMbs->sndSize += 2;
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsErrRsp
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null 
 Description	  : Modbus slave correct response.
-**************************************************************************/
+******************************************************************************/
 void MbsErrRsp(MB_RTU_SLV *pMbs)
 {
 	uint16	crcValue = 0;
 	uint8	*pch = pMbs->sbuf;
 
 	*pch++ = pMbs->rbuf[0]; //pMbs->devID;
-	*pch++ = pMbs->rbuf[1] + 0x80;
+	*pch++ = pMbs->rbuf[1] | 0x80;
 	*pch++ = pMbs->errCode;
 	crcValue = CRC16(pMbs->sbuf, 3);
 	*pch++ = crcValue >> 8;
 	*pch++ = crcValue & 0xFF;
-	pMbs->sndLen = 5;
+	pMbs->sndSize = 5;
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	ReadHoldReg
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 				[in]pReqMsg: head pointer of request message
@@ -322,14 +253,16 @@ Arguments 	  : [in, out]pMbs: pointer to the modbus object
 				[out]pErrCode: pointer of exception code if exceptional response
 Return		  : Null. 
 Description	  : Read hold registers.
-**************************************************************************/
+******************************************************************************/
 void ReadHoldReg(MB_RTU_SLV *pMbs)
 {
 	uint16	stAddr = (pMbs->rbuf[2]<<8) + pMbs->rbuf[3];
 	uint16	dataLen = (pMbs->rbuf[4]<<8) + pMbs->rbuf[5];
 	uint8	*pch = pMbs->sbuf; //pMbs->sbuf + pMbs->sndLen;
+	uint16	stAddrBak;
+	uint16	dataLenBak;
 
-	if (pMbs->rcvLen != 8) //length of frame error
+	if (pMbs->rcvSize != 8) //length of frame error
 	{
 		pMbs->errCode = MBE_UNKNOW_ERR;
 		pMbs->rspType = ERR_RSP;
@@ -344,20 +277,32 @@ void ReadHoldReg(MB_RTU_SLV *pMbs)
 	}
 	if (stAddr < pMbs->regBaseAddr) //access slop over
 	{
-		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
+		pMbs->errCode = MBE_ILLEGAL_DATA_ADDR;
 		pMbs->rspType = ERR_RSP;
 		return;
 	}
 	if ( (stAddr + dataLen) > (pMbs->regBaseAddr + pMbs->regSize) )
 	{
-		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
+		pMbs->errCode = MBE_ILLEGAL_DATA_ADDR;
 		pMbs->rspType = ERR_RSP;
 		return;
 	}
 
-	memcpy(pch, pMbs->rbuf, 2);
-	pch += 2;
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PreRdRegHandler != NULL))
+	{
+		pMbs->errCode = pMbs->pFuncHandler->PreRdRegHandler(pMbs->sbuf + 3, stAddr, dataLen);
+		if (pMbs->errCode != MBE_NO_ERR)
+		{
+			pMbs->rspType = ERR_RSP;
+			return;
+		}
+	}
 
+	stAddrBak = stAddr;
+	dataLenBak = dataLen;
+	
+	pch = CopyDataWithDesPtrMove(pch, pMbs->rbuf, 2);
 	*pch++ = dataLen << 1;
 	while (dataLen--)
 	{
@@ -366,21 +311,27 @@ void ReadHoldReg(MB_RTU_SLV *pMbs)
 		stAddr++;
 	}
 	pMbs->rspType = COR_RSP;
-	pMbs->sndLen = pch - pMbs->sbuf;
+	pMbs->sndSize = pch - pMbs->sbuf;
+	
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PostRdRegHandler != NULL))
+	{
+		pMbs->pFuncHandler->PostRdRegHandler(stAddrBak, dataLenBak);
+	}
 }
 
-/*************************************************************************
-Function Name :	PresetSingleReg
+/******************************************************************************
+Function Name :	WriteSingleReg
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null. 
 Description	  : Preset single register.
-**************************************************************************/
-void PresetSingleReg(MB_RTU_SLV *pMbs)
+******************************************************************************/
+void WriteSingleReg(MB_RTU_SLV *pMbs)
 {
 	uint16	dataAddr = (pMbs->rbuf[2]<<8) + pMbs->rbuf[3];
 	uint16	presetData = (pMbs->rbuf[4]<<8) + pMbs->rbuf[5];
 
-	if (pMbs->rcvLen != 8) //length of frame error
+	if (pMbs->rcvSize != 8) //length of frame error
 	{
 		pMbs->errCode = MBE_UNKNOW_ERR;
 		pMbs->rspType = ERR_RSP;
@@ -389,43 +340,89 @@ void PresetSingleReg(MB_RTU_SLV *pMbs)
 	if ( (dataAddr < pMbs->rwRegBaseAddr) 
 		|| (dataAddr >= (pMbs->rwRegBaseAddr + pMbs->rwRegSize)) )//access slop over
 	{
-		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
+		pMbs->errCode = MBE_ILLEGAL_DATA_ADDR;
 		pMbs->rspType = ERR_RSP;
 		return;
 	}
 
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PreWtRegHandler != NULL))
+	{
+		pMbs->errCode = pMbs->pFuncHandler->PreWtRegHandler(pMbs->rbuf + 4, dataAddr, 1);
+		if (pMbs->errCode != MBE_NO_ERR)
+		{
+			pMbs->rspType = ERR_RSP;
+			return;
+		}
+	}
+	
 	pMbs->pMbReg[dataAddr - pMbs->regBaseAddr] = presetData;
 	memcpy(pMbs->sbuf, pMbs->rbuf, 6);
 	pMbs->rspType = COR_RSP;
-	pMbs->sndLen = 6;
+	pMbs->sndSize = 6;
+
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PostWtRegHandler != NULL))
+	{
+		pMbs->pFuncHandler->PostWtRegHandler(dataAddr, 1);
+	}
 }
 
-/*************************************************************************
-Function Name :	PresetMultiReg
+/******************************************************************************
+Function Name :	WriteMultiReg
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null 
 Description	  : Preset multiple register.
-**************************************************************************/
-void PresetMultiReg(MB_RTU_SLV *pMbs)
+******************************************************************************/
+void WriteMultiReg(MB_RTU_SLV *pMbs)
 {
 	uint16	stAddr = (pMbs->rbuf[2]<<8) + pMbs->rbuf[3];
 	uint16	dataLen = (pMbs->rbuf[4]<<8) + pMbs->rbuf[5];
 	uint8	*pch;
+	uint16	stAddrBak;
+	uint16	dataLenBak;
 
-	if (pMbs->rcvLen != 9 + pMbs->rbuf[6]) //length of frame error
+	if (pMbs->rcvSize != 9 + pMbs->rbuf[6]) //length of frame error
 	{
 		pMbs->errCode = MBE_UNKNOW_ERR;
+		pMbs->rspType = ERR_RSP;
+		return;
+	}
+	if ( (dataLen == 0) 
+		|| (dataLen > MAX_WRITE_MULTI_REG) ) //transnormal data quantity 
+	{
+		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
+		pMbs->rspType = ERR_RSP;
+		return;
+	}
+	if ((dataLen<<1) != pMbs->rbuf[6]) //data value not match
+	{
+		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
 		pMbs->rspType = ERR_RSP;
 		return;
 	}
 	if ( (stAddr < pMbs->rwRegBaseAddr) 
 		|| ((stAddr + dataLen) > (pMbs->rwRegBaseAddr + pMbs->rwRegSize)) )//access slop over
 	{
-		pMbs->errCode = MBE_ILLEGAL_DATA_VALUE;
+		pMbs->errCode = MBE_ILLEGAL_DATA_ADDR;
 		pMbs->rspType = ERR_RSP;
 		return;
 	}
 
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PreWtRegHandler != NULL))
+	{
+		pMbs->errCode = pMbs->pFuncHandler->PreWtRegHandler(pMbs->rbuf + 7, stAddr, dataLen);
+		if (pMbs->errCode != MBE_NO_ERR)
+		{
+			pMbs->rspType = ERR_RSP;
+			return;
+		}
+	}
+	
+	stAddrBak = stAddr;
+	dataLenBak = dataLen;
+	
 	memcpy(pMbs->sbuf, pMbs->rbuf, 6);
 	pch = pMbs->rbuf + 7;
 	while (dataLen--)
@@ -435,27 +432,88 @@ void PresetMultiReg(MB_RTU_SLV *pMbs)
 		stAddr++;
 	}
 	pMbs->rspType = COR_RSP;
-	pMbs->sndLen = 6;
+	pMbs->sndSize = 6;
+
+	if ( (pMbs->pFuncHandler != NULL)
+		&& (pMbs->pFuncHandler->PostWtRegHandler != NULL))
+	{
+		pMbs->pFuncHandler->PostWtRegHandler(stAddrBak, dataLenBak);
+	}
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	GetInnerVer
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null
 Description	  : Get inner firmware version of product.
-**************************************************************************/
+******************************************************************************/
 void GetInnerVer(MB_RTU_SLV *pMbs)
 {
+#if 0
+	uint8	*pch = pMbs->sbuf;
+
+	if (pMbs->rcvSize != 4) //length of frame error
+	{
+		pMbs->errCode = MBE_UNKNOW_ERR;
+		pMbs->rspType = ERR_RSP;
+		return;
+	}
+
+	pch = CopyDataWithDesPtrMove(pch, pMbs->rbuf, 2);
+	*pch++ = INNER_VER >> 24;
+	*pch++ = (INNER_VER >> 16) & 0xFF;
+	*pch++ = (INNER_VER >> 8) & 0xFF;
+	*pch++ = INNER_VER & 0xFF;
+	*pch++ = INNER_VER_TIME >> 24;
+	*pch++ = (INNER_VER_TIME >> 16) & 0xFF;
+	*pch++ = (INNER_VER_TIME >> 8) & 0xFF;
+	*pch++ = INNER_VER_TIME & 0xFF;
+
+	pMbs->rspType = COR_RSP;
+	pMbs->sndSize = 10;
+#endif
 }
 
 
-/*************************************************************************
+/******************************************************************************
+Function Name :	GetLibVer
+Arguments 	  : [in, out]pMbs: pointer to the modbus object
+Return		  : Null
+Description	  : Get version of Modbus library itself.
+******************************************************************************/
+void GetLibVer(MB_RTU_SLV *pMbs)
+{
+	uint8	*pch = pMbs->sbuf;
+
+	if (pMbs->rcvSize != 4) //length of frame error
+	{
+		pMbs->errCode = MBE_UNKNOW_ERR;
+		pMbs->rspType = ERR_RSP;
+		return;
+	}
+
+	pch = CopyDataWithDesPtrMove(pch, pMbs->rbuf, 2);
+	*pch++ = LIB_VER >> 24;
+	*pch++ = (LIB_VER >> 16) & 0xFF;
+	*pch++ = (LIB_VER >> 8) & 0xFF;
+	*pch++ = LIB_VER & 0xFF;
+	*pch++ = LIB_CMPL_TIME >> 24;
+	*pch++ = (LIB_CMPL_TIME >> 16) & 0xFF;
+	*pch++ = (LIB_CMPL_TIME >> 8) & 0xFF;
+	*pch++ = LIB_CMPL_TIME & 0xFF;
+
+	pMbs->rspType = COR_RSP;
+	pMbs->sndSize = 10;
+}
+
+
+/******************************************************************************
 Function Name :	ReadMbReg
 Arguments 	  : [in]pMbs: pointer to the modbus object
 				[in]index: data index in the modbus register array
 Return		  : data to be read, if 'index' overrun, return 'FAIL'(0xFFFF) 
 Description	  : read a single modbus register.
-**************************************************************************/
+******************************************************************************/
 uint16 ReadMbReg(MB_RTU_SLV *pMbs, uint8 index)
 {
 	if (index >= pMbs->regSize)
@@ -464,7 +522,7 @@ uint16 ReadMbReg(MB_RTU_SLV *pMbs, uint8 index)
 	return pMbs->pMbReg[index];
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	WriteMbReg
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 				[in]index: data index in the modbus register array
@@ -472,7 +530,7 @@ Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : TRUE-success
 				FALSE-failed, 'inedx' overrun 
 Description	  : write a single modbus register.
-**************************************************************************/
+******************************************************************************/
 uint8 WriteMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 data)
 {
 	if (index >= pMbs->regSize)
@@ -482,7 +540,7 @@ uint8 WriteMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 data)
 	return TRUE;
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	ReadMassMbReg
 Arguments 	  : [in]pMbs: pointer to the modbus object
 				[in]index: start data index in the modbus register array
@@ -491,7 +549,7 @@ Arguments 	  : [in]pMbs: pointer to the modbus object
 Return		  : If failed, return FALSE
 				If successful, return 'TRUE'
 Description	  : read a serial mass of modbus registers.
-**************************************************************************/
+******************************************************************************/
 uint8 ReadMassMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 *pDes, uint8 size)
 {
 	if ((index + size) >= pMbs->regSize)
@@ -504,7 +562,7 @@ uint8 ReadMassMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 *pDes, uint8 size)
 	return TRUE;
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	WriteMassMbReg
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 				[in]index: start data index in the modbus register array
@@ -513,7 +571,7 @@ Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : If failed, return FALSE
 				If successful, return 'TRUE'
 Description	  : write a serial mass of modbus registers.
-**************************************************************************/
+******************************************************************************/
 uint8 WriteMassMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 *pSrc, uint8 size)
 {
 	if ((index + size) >= pMbs->regSize)
@@ -526,35 +584,38 @@ uint8 WriteMassMbReg(MB_RTU_SLV *pMbs, uint8 index, uint16 *pSrc, uint8 size)
 	return TRUE;
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsRcvSrv
 Arguments 	  : [in, out]pMbs: pointer to the modbus object
 Return		  : Null
 Description	  : modbus-RTU slave receiving service.
-**************************************************************************/
+******************************************************************************/
 void MbsRcvSrv(MB_RTU_SLV *pMbs)
 {
-	uint8	rcvFrm[256];
+	uint8 rcvFrm[256];
 
-	/* if receiving end (judged by free line time) */
-	if ( (pMbs->pfGetRcvCnt() > 0) && (GetInterval(pMbs->pfGetLastRcvTime()) >= pMbs->rtuSpace) ) 
+	if((pMbs->GetRcvCnt() > 0) && (GetInterval(pMbs->GetLastRcvTime()) >= pMbs->rtuSpace))
 	{
 		pMbs->rbuf = rcvFrm;
-		pMbs->rcvLen = pMbs->pfRcvFrm(pMbs->rbuf);
-		
+		pMbs->rcvSize = pMbs->RcvFrm(pMbs->rbuf);
+
 		/* if size of frame not enough, ignore it. */
-		if (pMbs->rcvLen < MB_SER_PDU_SIZE_MIN)
+		if (pMbs->rcvSize < MB_SER_PDU_SIZE_MIN)
 			return;
 
+		/* if command code invalid, ignore it. */
+		if (rcvFrm[1] >= 0x80)
+			return;
+		
 		/* device address match or broad-casting address or universal address */
-		if ( (rcvFrm[0] == pMbs->devID) 
+		if ( (rcvFrm[0] == pMbs->devID)
 			|| (rcvFrm[0] == MB_ID_UNIVE)
-			|| ((rcvFrm[0] == MB_ID_BROAD) && ((rcvFrm[1] == PRESET_SINGLE_REG) 
-											   || (rcvFrm[1] == PRESET_MULTI_REG))) )
+			|| ((rcvFrm[0] == MB_ID_BROAD) && ((rcvFrm[1] == MBC_WRITE_SINGLE_REG)
+											   || (rcvFrm[1] == MBC_WRITE_MULTI_REG))) )
 		{
 			/* CRC check */
-			if ( CRC16(rcvFrm, pMbs->rcvLen - 2) 
-				== ((rcvFrm[pMbs->rcvLen - 2] << 8) + rcvFrm[pMbs->rcvLen - 1]) )
+			if ( CRC16(rcvFrm, pMbs->rcvSize - 2)
+				== ((rcvFrm[pMbs->rcvSize - 2] << 8) + rcvFrm[pMbs->rcvSize - 1]) )
 			{
 				MbsRsp(pMbs);
 			}
@@ -562,36 +623,53 @@ void MbsRcvSrv(MB_RTU_SLV *pMbs)
 	}
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsSndSrv
 Arguments 	  : [in]pMbs: pointer to the modbus object
 Return		  : Null
 Description	  : modbus-RTU slave sending service.
-**************************************************************************/
+******************************************************************************/
 void MbsSndSrv(MB_RTU_SLV *pMbs)
 {
-	if (pMbs->sndLen)
+	if (pMbs->sndSize)
 	{
-		if (pMbs->pfIsSndIdle())
+		if (pMbs->IsSndIdle())
 		{
-			if (pMbs->pfSndFrm(pMbs->sbuf, pMbs->sndLen))
+			if (pMbs->SndFrm(pMbs->sbuf, pMbs->sndSize))
 			{
-				pMbs->sndLen = 0;
+				pMbs->sndSize = 0;
 			}			
 		}
 	}
 }
 
-/*************************************************************************
+/******************************************************************************
 Function Name :	MbsSrv
 Arguments 	  : [in]pMbs: pointer to the modbus object
 Return		  : Null
 Description	  : Main entrence of modbus-RTU slave service.
-**************************************************************************/
+******************************************************************************/
 void MbsSrv(MB_RTU_SLV *pMbs)
 {
 	MbsRcvSrv(pMbs); //analyze receiving
 	MbsSndSrv(pMbs); //analyze sending
+}
+
+/************************************************************************************
+Procedure     :	MbsRegisterFuncCB
+Arguments 	  : [in, out]pMbs: pointer to the modbus slave object
+			  :	[in]handler: pointer to structure of callbacks to be registered
+Return		  : TRUE-success
+				FALSE-failed (invalid arguments)
+Description	  : Register callback function on Modbus function execution.
+***********************************************************************************/
+BOOL8	MbsRegisterFuncCB(MB_RTU_SLV *pMbs, psMbsFuncCB handler)
+{
+	if (handler == NULL)
+		return FALSE;
+
+	pMbs->pFuncHandler = handler;
+	return TRUE;
 }
 
 
